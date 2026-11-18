@@ -1,6 +1,6 @@
 # vmem
 
-Single-header reserve-only `mmap` + linear allocator. POSIX, no dependencies, nothing to link — every function is `static inline`.
+Single-header reserve-only `mmap` + linear + stack allocators. POSIX, no dependencies, nothing to link — every function is `static inline`.
 
 Reserve, don't commit: `vmem_reserve` only reserves address space; the OS commits a page when it is first touched, so a large reservation costs no RAM until pages are actually used. Pages are handed back with `vmem_release` (`madvise(MADV_FREE)`) and the range stays usable.
 
@@ -57,6 +57,15 @@ cc -O2 -o demo demo.c
 | `void linear_reset(struct linear_allocator* a)` | `used = 0` |
 | `void linear_release(struct linear_allocator* a)` | `vmem_release` of `[0, peak)`, then `used = peak = 0` |
 | `void linear_free(struct linear_allocator* a)` | `vmem_free`, zeroes the struct |
+| `bool stack_init(struct stack_allocator* s, size_t size)` | initialize over a `vmem_reserve` of `size` |
+| `void* stack_alloc(struct stack_allocator* s, size_t size)` | 16-byte aligned; `NULL` when full or corrupt; 16 B of trailer metadata per block |
+| `void* stack_pop(struct stack_allocator* s)` | rewind past the most recent block, returning its pointer; `NULL` when empty or corrupt |
+| `void* stack_top(struct stack_allocator* s)` | payload pointer of the current top; `NULL` when empty or corrupt |
+| `void stack_reset(struct stack_allocator* s)` | `used = 0` |
+| `void stack_release(struct stack_allocator* s)` | `vmem_release` of `[0, peak)`, then `used = peak = 0` |
+| `void stack_free(struct stack_allocator* s)` | `vmem_free`, zeroes the struct |
+
+Each block is the 16-byte-aligned payload plus a 16-byte trailer at its end (a `uint64_t` canary followed by the stack pointer from before the block). Every block ends with its trailer, so the top trailer is always at `used - 16`: `stack_pop` reads it directly and rewinds to the stored pointer. An overrun of the current top block clobbers its canary and is caught at the next pop/top, which marks the stack corrupt, after which all operations return `NULL`.
 
 ## Notes
 
