@@ -1,6 +1,44 @@
+// MIT License
+
+// Copyright (c) 2026 Geolm
+
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+
+
 // vmem: single-header reserve-only mmap + linear + stack allocators.
+// 
+// Github repo : https://github.com/Geolm/vmem
 //
-// Standalone (POSIX mmap), no dependencies, nothing to link: every function is static inline.
+// stb-style single header: the header part exposes only the public API (the allocator
+// structs and the function declarations), and can be included from as many files as you
+// like. The implementation section holds every function body plus the internal helpers;
+// compile it in exactly one translation unit by defining VMEM_IMPLEMENTATION before the
+// include:
+//
+//     #define VMEM_IMPLEMENTATION
+//     #include "vmem.h"   // the one file that provides the functions
+//
+//     #include "vmem.h"   // every other file: declarations only
+//
+// Standalone (POSIX mmap), no dependencies, nothing to link: the public functions are
+// ordinary functions provided by the translation unit that compiles the section.
 //
 // Reserve, don't commit: vmem_reserve only reserves address space, the OS commits a page when
 // it is first touched, so a reserved worst case costs no RAM. Every arena is fenced with one
@@ -17,9 +55,10 @@
 // accesses are reported at the faulting instruction. Outside ASan, the stack's canary is the
 // only corruption detection in release builds.
 //
-// Optional: define VMEM_ON_CORRUPT(s) before including this header to replace the default
-// handler (prints to stderr, then __builtin_trap()) called on stack corruption, for example
-// to log or to keep the old "return NULL" behaviour.
+// Optional: define VMEM_ON_CORRUPT(s) before including this header (in the translation unit
+// that defines VMEM_IMPLEMENTATION) to replace the default handler (prints to stderr, then
+// __builtin_trap()) called on stack corruption, for example to log or to keep the old
+// "return NULL" behaviour.
 
 #ifndef VMEM_H
 #define VMEM_H
@@ -27,90 +66,21 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <string.h>
-#include <unistd.h>
-#include <sys/mman.h>
 
-#define VMEM_VERSION "0.0.2"
+#define VMEM_VERSION "1.0.0"
 
-#if (defined(__has_feature) && __has_feature(address_sanitizer)) || defined(__SANITIZE_ADDRESS__)
-#define VMEM_ASAN 1
-#include <sanitizer/asan_interface.h>
-#endif
-
-//-----------------------------------------------------------------------------------------------------------------------------
-#if VMEM_ASAN
-static inline void vmem__poison(void* p, size_t size)
-{
-    ASAN_POISON_MEMORY_REGION(p, size);
-}
-
-static inline void vmem__unpoison(void* p, size_t size)
-{
-    ASAN_UNPOISON_MEMORY_REGION(p, size);
-}
+// VMEM_DEF is extern in declaration-only translation units and nothing in the one that
+// compiles the implementation section at the bottom of this file.
+#ifdef VMEM_IMPLEMENTATION
+#define VMEM_DEF
 #else
-static inline void vmem__poison(void* p, size_t size)
-{
-    (void)p;
-    (void)size;
-}
-
-static inline void vmem__unpoison(void* p, size_t size)
-{
-    (void)p;
-    (void)size;
-}
+#define VMEM_DEF extern
 #endif
 
 //-----------------------------------------------------------------------------------------------------------------------------
-// Reserves `size` bytes of address space (no RAM until a page is touched): maps size rounded
-// up to the page size, fenced with one PROT_NONE guard page at each end, and returns the
-// address just past the leading guard. The guards take address space only, no RAM.
-// vmem_free and vmem_release expect the size as passed here, not the rounded one.
-static inline void* vmem_reserve(size_t size)
-{
-    if (size == 0)
-        return NULL;
-
-    size_t page = (size_t)getpagesize();
-    size_t rounded = (size + page - 1) & ~(page - 1);   // getpagesize() is a power of two
-
-    void* start = mmap(NULL, rounded + page * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (start == MAP_FAILED)
-        return NULL;
-
-    mprotect(start, page, PROT_NONE);                              // leading guard
-    mprotect((char*)start + rounded + page, page, PROT_NONE);      // trailing guard
-    return (char*)start + page;
-}
-
-//-----------------------------------------------------------------------------------------------------------------------------
-// Remaps [ptr, ptr + size) as fresh anonymous pages (MAP_FIXED): the old pages are dropped
-// right away, so the process's phys_footprint falls immediately, the range reads back as
-// zeros, and the range stays usable. The guards placed by vmem_reserve are never touched.
-// Returns false on failure.
-static inline bool vmem_release(void* ptr, size_t size)
-{
-    if (ptr == NULL || size == 0)
-        return false;
-
-    void* p = mmap(ptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-    return p != MAP_FAILED;
-}
-
-//-----------------------------------------------------------------------------------------------------------------------------
-// Unmaps the whole mapping created by vmem_reserve, guards included (size as passed there).
-static inline void vmem_free(void* ptr, size_t size)
-{
-    if (ptr == NULL || size == 0)
-        return;
-
-    size_t page = (size_t)getpagesize();
-    size_t rounded = (size + page - 1) & ~(page - 1);
-    munmap((char*)ptr - page, rounded + page * 2);
-}
+VMEM_DEF void* vmem_reserve(size_t size);
+VMEM_DEF bool vmem_release(void* ptr, size_t size);
+VMEM_DEF void vmem_free(void* ptr, size_t size);
 
 //-----------------------------------------------------------------------------------------------------------------------------
 struct linear_allocator
@@ -121,74 +91,11 @@ struct linear_allocator
     size_t size;
 };
 
-//-----------------------------------------------------------------------------------------------------------------------------
-// vmem_reserve of `size`; the whole arena is poisoned under ASan until allocated.
-static inline bool linear_init(struct linear_allocator* a, size_t size)
-{
-    a->base = (uint8_t*)vmem_reserve(size);
-    a->size = size;
-    a->used = 0;
-    a->peak = 0;
-    if (a->base == NULL)
-        return false;
-    vmem__poison(a->base, size);
-    return true;
-}
-
-//-----------------------------------------------------------------------------------------------------------------------------
-// 16-byte aligned (malloc's; the base is page-aligned). Returns NULL for size 0, for sizes
-// whose round-up would overflow, or when the arena is full.
-static inline void* linear_alloc(struct linear_allocator* a, size_t size)
-{
-    size_t req = size;
-    if (a->base == NULL || req == 0 || req > SIZE_MAX - 15)   // bound so req + 15 cannot wrap
-        return NULL;
-
-    size = (req + 15) & ~(size_t)15;
-    if (size > a->size - a->used)                             // used <= size always, no wrap
-        return NULL;
-
-    void* p = a->base + a->used;
-    a->used += size;
-    if (a->used > a->peak)
-        a->peak = a->used;
-    vmem__unpoison(p, req);    // exactly the requested bytes; the padding stays poisoned
-    return p;
-}
-
-//-----------------------------------------------------------------------------------------------------------------------------
-static inline void linear_reset(struct linear_allocator* a)                // used = 0
-{
-    if (a->base != NULL && a->used > 0)
-        vmem__poison(a->base, a->used);
-    a->used = 0;
-}
-
-//-----------------------------------------------------------------------------------------------------------------------------
-// vmem_release of [0, peak), then used = peak = 0.
-static inline void linear_release(struct linear_allocator* a)
-{
-    if (a->base != NULL && a->peak > 0)
-    {
-        vmem_release(a->base, a->peak);
-        vmem__poison(a->base, a->peak);
-    }
-    a->used = 0;
-    a->peak = 0;
-}
-
-//-----------------------------------------------------------------------------------------------------------------------------
-static inline void linear_free(struct linear_allocator* a)                 // vmem_free, zeroes the struct
-{
-    if (a->base != NULL)
-    {
-        vmem_free(a->base, a->size);
-        a->base = NULL;
-    }
-    a->size = 0;
-    a->used = 0;
-    a->peak = 0;
-}
+VMEM_DEF bool linear_init(struct linear_allocator* a, size_t size);
+VMEM_DEF void* linear_alloc(struct linear_allocator* a, size_t size);
+VMEM_DEF void linear_reset(struct linear_allocator* a);
+VMEM_DEF void linear_release(struct linear_allocator* a);
+VMEM_DEF void linear_free(struct linear_allocator* a);
 
 //-----------------------------------------------------------------------------------------------------------------------------
 // stack allocator: LIFO with a canary trailer, on top of vmem_reserve.
@@ -217,23 +124,200 @@ struct stack_allocator
     bool corrupt;  // a canary failed or a check failed; stored pointers can no longer be trusted
 };
 
+VMEM_DEF bool stack_init(struct stack_allocator* s, size_t size);
+VMEM_DEF void* stack_alloc(struct stack_allocator* s, size_t size);
+VMEM_DEF void* stack_pop(struct stack_allocator* s, void* p);
+VMEM_DEF void* stack_top(struct stack_allocator* s);
+VMEM_DEF size_t stack_mark(struct stack_allocator* s);
+VMEM_DEF void stack_rewind(struct stack_allocator* s, size_t m);
+VMEM_DEF bool stack_check(struct stack_allocator* s);
+VMEM_DEF void stack_reset(struct stack_allocator* s);
+VMEM_DEF void stack_release(struct stack_allocator* s);
+VMEM_DEF void stack_free(struct stack_allocator* s);
+
+#endif // VMEM_H
+
+//-----------------------------------------------------------------------------------------------------------------------------
+// The implementation section, compiled in exactly one translation unit:
+//
+//     #define VMEM_IMPLEMENTATION
+//     #include "vmem.h"
+//
+#ifdef VMEM_IMPLEMENTATION
+
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/mman.h>
+
+#if (defined(__has_feature) && __has_feature(address_sanitizer)) || defined(__SANITIZE_ADDRESS__)
+#define VMEM_ASAN 1
+#include <sanitizer/asan_interface.h>
+#endif
+
+//-----------------------------------------------------------------------------------------------------------------------------
+#if VMEM_ASAN
+static void vmem__poison(void* p, size_t size)
+{
+    ASAN_POISON_MEMORY_REGION(p, size);
+}
+
+static void vmem__unpoison(void* p, size_t size)
+{
+    ASAN_UNPOISON_MEMORY_REGION(p, size);
+}
+#else
+static void vmem__poison(void* p, size_t size)
+{
+    (void)p;
+    (void)size;
+}
+
+static void vmem__unpoison(void* p, size_t size)
+{
+    (void)p;
+    (void)size;
+}
+#endif
+
+//-----------------------------------------------------------------------------------------------------------------------------
+// Reserves `size` bytes of address space (no RAM until a page is touched): maps size rounded
+// up to the page size, fenced with one PROT_NONE guard page at each end, and returns the
+// address just past the leading guard. The guards take address space only, no RAM.
+// vmem_free and vmem_release expect the size as passed here, not the rounded one.
+void* vmem_reserve(size_t size)
+{
+    if (size == 0)
+        return NULL;
+
+    size_t page = (size_t)getpagesize();
+    size_t rounded = (size + page - 1) & ~(page - 1);   // getpagesize() is a power of two
+
+    void* start = mmap(NULL, rounded + page * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (start == MAP_FAILED)
+        return NULL;
+
+    mprotect(start, page, PROT_NONE);                              // leading guard
+    mprotect((char*)start + rounded + page, page, PROT_NONE);      // trailing guard
+    return (char*)start + page;
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------
+// Remaps [ptr, ptr + size) as fresh anonymous pages (MAP_FIXED): the old pages are dropped
+// right away, so the process's phys_footprint falls immediately, the range reads back as
+// zeros, and the range stays usable. The guards placed by vmem_reserve are never touched.
+// Returns false on failure.
+bool vmem_release(void* ptr, size_t size)
+{
+    if (ptr == NULL || size == 0)
+        return false;
+
+    void* p = mmap(ptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    return p != MAP_FAILED;
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------
+// Unmaps the whole mapping created by vmem_reserve, guards included (size as passed there).
+void vmem_free(void* ptr, size_t size)
+{
+    if (ptr == NULL || size == 0)
+        return;
+
+    size_t page = (size_t)getpagesize();
+    size_t rounded = (size + page - 1) & ~(page - 1);
+    munmap((char*)ptr - page, rounded + page * 2);
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------
+// vmem_reserve of `size`; the whole arena is poisoned under ASan until allocated.
+bool linear_init(struct linear_allocator* a, size_t size)
+{
+    a->base = (uint8_t*)vmem_reserve(size);
+    a->size = size;
+    a->used = 0;
+    a->peak = 0;
+    if (a->base == NULL)
+        return false;
+    vmem__poison(a->base, size);
+    return true;
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------
+// 16-byte aligned (malloc's; the base is page-aligned). Returns NULL for size 0, for sizes
+// whose round-up would overflow, or when the arena is full.
+void* linear_alloc(struct linear_allocator* a, size_t size)
+{
+    size_t req = size;
+    if (a->base == NULL || req == 0 || req > SIZE_MAX - 15)   // bound so req + 15 cannot wrap
+        return NULL;
+
+    size = (req + 15) & ~(size_t)15;
+    if (size > a->size - a->used)                             // used <= size always, no wrap
+        return NULL;
+
+    void* p = a->base + a->used;
+    a->used += size;
+    if (a->used > a->peak)
+        a->peak = a->used;
+    vmem__unpoison(p, req);    // exactly the requested bytes; the padding stays poisoned
+    return p;
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------
+void linear_reset(struct linear_allocator* a)                 // used = 0
+{
+    if (a->base != NULL && a->used > 0)
+        vmem__poison(a->base, a->used);
+    a->used = 0;
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------
+// vmem_release of [0, peak), then used = peak = 0.
+void linear_release(struct linear_allocator* a)
+{
+    if (a->base != NULL && a->peak > 0)
+    {
+        vmem_release(a->base, a->peak);
+        vmem__poison(a->base, a->peak);
+    }
+    a->used = 0;
+    a->peak = 0;
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------
+// vmem_free, zeroes the struct.
+void linear_free(struct linear_allocator* a)
+{
+    if (a->base != NULL)
+    {
+        vmem_free(a->base, a->size);
+        a->base = NULL;
+    }
+    a->size = 0;
+    a->used = 0;
+    a->peak = 0;
+}
+
+//-----------------------------------------------------------------------------------------------------------------------------
 static const uint64_t stack_canary = 0xA5C3E1F07B9D2E4CULL;   // high entropy, no zero bytes
 
 #ifndef VMEM_ON_CORRUPT
 #define VMEM_ON_CORRUPT(s) vmem__on_corrupt(s)
-#endif
 
 //-----------------------------------------------------------------------------------------------------------------------------
-static inline void vmem__on_corrupt(struct stack_allocator* s)
+// Default corruption handler; compiled only when VMEM_ON_CORRUPT(s) was not defined before
+// including this header.
+static void vmem__on_corrupt(struct stack_allocator* s)
 {
     (void)s;
     fprintf(stderr, "vmem: stack allocator corruption detected\n");
     __builtin_trap();
 }
+#endif
 
 //-----------------------------------------------------------------------------------------------------------------------------
 // vmem_reserve of `size`; the whole arena is poisoned under ASan until allocated.
-static inline bool stack_init(struct stack_allocator* s, size_t size)
+bool stack_init(struct stack_allocator* s, size_t size)
 {
     s->base = (uint8_t*)vmem_reserve(size);
     s->size = size;
@@ -250,7 +334,7 @@ static inline bool stack_init(struct stack_allocator* s, size_t size)
 // Reads and validates the trailer of the block that ends at offset u (canary at u - 16,
 // prev at u - 8). The trailer is unpoisoned around the access and poisoned again. On an
 // invalid canary or prev: sets corrupt, calls VMEM_ON_CORRUPT, returns false.
-static inline bool stack__read_trailer(struct stack_allocator* s, size_t u, uint64_t* prev)
+static bool stack__read_trailer(struct stack_allocator* s, size_t u, uint64_t* prev)
 {
     uint8_t* t = s->base + u - 16;
     uint64_t canary;
@@ -272,7 +356,7 @@ static inline bool stack__read_trailer(struct stack_allocator* s, size_t u, uint
 // 16-byte aligned (malloc's); the block carries a 16-byte trailer after the rounded payload.
 // Returns NULL for size 0, for overflowing sizes, when full, or when the stack is corrupt:
 // the current top's trailer is checked before pushing, so an overrun of it is caught here.
-static inline void* stack_alloc(struct stack_allocator* s, size_t size)
+void* stack_alloc(struct stack_allocator* s, size_t size)
 {
     size_t req = size;
     if (s->base == NULL)
@@ -316,7 +400,7 @@ static inline void* stack_alloc(struct stack_allocator* s, size_t size)
 // Pops the top block: `p` must be the pointer stack_alloc returned for it; a different
 // pointer is an out-of-order free and fails loudly. Returns p on success, otherwise NULL
 // and used is unchanged.
-static inline void* stack_pop(struct stack_allocator* s, void* p)
+void* stack_pop(struct stack_allocator* s, void* p)
 {
     if (s->base == NULL)
         return NULL;
@@ -347,7 +431,7 @@ static inline void* stack_pop(struct stack_allocator* s, void* p)
 
 //-----------------------------------------------------------------------------------------------------------------------------
 // Payload of the current top block, or NULL when empty, corrupt or on a failed check.
-static inline void* stack_top(struct stack_allocator* s)
+void* stack_top(struct stack_allocator* s)
 {
     if (s->base == NULL)
         return NULL;
@@ -367,7 +451,7 @@ static inline void* stack_top(struct stack_allocator* s)
 
 //-----------------------------------------------------------------------------------------------------------------------------
 // Returns used: a mark to hand back to stack_rewind.
-static inline size_t stack_mark(struct stack_allocator* s)
+size_t stack_mark(struct stack_allocator* s)
 {
     return s->used;
 }
@@ -376,7 +460,7 @@ static inline size_t stack_mark(struct stack_allocator* s)
 // Rewinds used to mark m: m must be <= used and a real block boundary, reachable by
 // following the prev chain from the top (0 always is). On failure VMEM_ON_CORRUPT(s) is
 // called, the stack is marked corrupt, and used is unchanged.
-static inline void stack_rewind(struct stack_allocator* s, size_t m)
+void stack_rewind(struct stack_allocator* s, size_t m)
 {
     if (s->base == NULL)
         return;
@@ -414,7 +498,7 @@ static inline void stack_rewind(struct stack_allocator* s, size_t m)
 //-----------------------------------------------------------------------------------------------------------------------------
 // O(n) walk of the prev chain from top to bottom, validating every trailer. Returns false
 // on the first invalid one (which also calls VMEM_ON_CORRUPT and sets corrupt).
-static inline bool stack_check(struct stack_allocator* s)
+bool stack_check(struct stack_allocator* s)
 {
     if (s->base == NULL || s->corrupt)
         return false;
@@ -432,7 +516,7 @@ static inline bool stack_check(struct stack_allocator* s)
 
 //-----------------------------------------------------------------------------------------------------------------------------
 // used = 0, corrupt = false; the freed range is re-poisoned under ASan.
-static inline void stack_reset(struct stack_allocator* s)
+void stack_reset(struct stack_allocator* s)
 {
     if (s->base != NULL && s->used > 0)
         vmem__poison(s->base, s->used);
@@ -442,7 +526,7 @@ static inline void stack_reset(struct stack_allocator* s)
 
 //-----------------------------------------------------------------------------------------------------------------------------
 // vmem_release of [0, peak), then used = peak = 0, corrupt = false.
-static inline void stack_release(struct stack_allocator* s)
+void stack_release(struct stack_allocator* s)
 {
     if (s->base != NULL && s->peak > 0)
     {
@@ -456,7 +540,7 @@ static inline void stack_release(struct stack_allocator* s)
 
 //-----------------------------------------------------------------------------------------------------------------------------
 // vmem_free, zeroes the struct.
-static inline void stack_free(struct stack_allocator* s)
+void stack_free(struct stack_allocator* s)
 {
     if (s->base != NULL)
     {
@@ -469,4 +553,4 @@ static inline void stack_free(struct stack_allocator* s)
     s->corrupt = false;
 }
 
-#endif // VMEM_H
+#endif // VMEM_IMPLEMENTATION

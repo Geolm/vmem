@@ -35,6 +35,8 @@ static void vmem_test_hook(struct stack_allocator* s)
 }
 #define VMEM_ON_CORRUPT(s) vmem_test_hook(s)
 
+// Compile vmem.h's implementation section in this translation unit.
+#define VMEM_IMPLEMENTATION
 #include "vmem.h"
 
 #if (defined(__has_feature) && __has_feature(address_sanitizer)) || defined(__SANITIZE_ADDRESS__)

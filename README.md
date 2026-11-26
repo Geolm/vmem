@@ -1,23 +1,34 @@
 # vmem
 
-Single-header reserve-only `mmap` + linear + stack allocators. POSIX, no dependencies, nothing to link — every function is `static inline`.
+Single-header reserve-only `mmap` + linear + stack allocators. POSIX, no dependencies, nothing to link. stb-style layout: the header part declares the public API; the implementation section is compiled in exactly one file that defines `VMEM_IMPLEMENTATION` before including the header.
 
 Reserve, don't commit: `vmem_reserve` only reserves address space; the OS commits a page when it is first touched, so a large reservation costs no RAM until pages are actually used. Every arena is fenced with a `PROT_NONE` guard page at each end, so running off either end faults immediately (the guards take address space only, no RAM). Pages are handed back with `vmem_release`, which remaps the range: the pages are dropped right away, the range reads back as zeros, and the range stays usable.
 
 ## Usage
 
-Drop `vmem.h` next to your code:
+Drop `vmem.h` next to your code. In exactly one `.c` file, define `VMEM_IMPLEMENTATION` before including the header to compile the implementation section; every other file includes the header normally:
 
 ```c
+// vm.c — the one file that provides the functions
+#define VMEM_IMPLEMENTATION
 #include "vmem.h"
 ```
 
-There is no `.c` file to compile and nothing to link.
+```c
+// any other file
+#include "vmem.h"
+```
+
+There is nothing to link.
 
 ## Example
 
+A single-file program defines `VMEM_IMPLEMENTATION` right before the include:
+
 ```c
 #include <stdio.h>
+
+#define VMEM_IMPLEMENTATION
 #include "vmem.h"
 
 int main(void)
